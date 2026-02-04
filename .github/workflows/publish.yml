@@ -95,3 +95,53 @@ jobs:
           else
             echo "Record exists. Skipping."
           fi
+
+      - name: Restrict Access to OWID Staff
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.WEBSITE_STARTER_CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          DOMAIN: "${{ steps.meta.outputs.NAME }}.apps.owid.io"
+        run: |
+          # Check if an Access application already exists for this domain
+          EXISTING_APP=$(curl -s -X GET \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/access/apps" \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            | jq -r --arg domain "$DOMAIN" '.result[] | select(.domain == $domain) | .id')
+
+          if [ -n "$EXISTING_APP" ]; then
+            echo "Access application already exists for $DOMAIN (ID: $EXISTING_APP). Skipping."
+            exit 0
+          fi
+
+          echo "Creating Access application for $DOMAIN..."
+          APP_RESPONSE=$(curl -f -s -X POST \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/access/apps" \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data "{
+              \"name\": \"$DOMAIN\",
+              \"domain\": \"$DOMAIN\",
+              \"type\": \"self_hosted\",
+              \"session_duration\": \"24h\"
+            }")
+
+          APP_ID=$(echo "$APP_RESPONSE" | jq -r '.result.id')
+          echo "Created Access application: $APP_ID"
+
+          echo "Adding policy to allow @ourworldindata.org emails..."
+          curl -f -s -X POST \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/access/apps/$APP_ID/policies" \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data "{
+              \"name\": \"Allow OWID Staff\",
+              \"decision\": \"allow\",
+              \"include\": [{
+                \"email_domain\": {
+                  \"domain\": \"ourworldindata.org\"
+                }
+              }]
+            }"
+
+          echo "Access restriction enabled for $DOMAIN"
