@@ -110,18 +110,21 @@ jobs:
             | jq -r --arg domain "$DOMAIN" '.result[] | select(.domain == $domain) | .id')
 
           # Find the Google identity provider ID (skip the OTP provider)
-          GOOGLE_IDP=$(curl -s -X GET \
+          IDP_RESPONSE=$(curl -s -X GET \
             "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/access/identity_providers" \
             -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
-            -H "Content-Type: application/json" \
-            | jq -r '.result[] | select(.type == "google" or .type == "google-apps") | .id' | head -1)
+            -H "Content-Type: application/json")
+          echo "Identity providers response: $(echo "$IDP_RESPONSE" | jq -c '{success: .success, result_count: (.result | length), types: [.result[]?.type]}')"
 
-          if [ -z "$GOOGLE_IDP" ]; then
-            echo "Warning: Could not find Google identity provider."
-            ALLOWED_IDPS=""
-          else
+          GOOGLE_IDP=$(echo "$IDP_RESPONSE" \
+            | jq -r '(.result // [])[] | select(.type == "google" or .type == "google-apps" or (.name | test("google";"i"))) | .id' | head -1)
+
+          if [ -n "$GOOGLE_IDP" ]; then
             echo "Found Google identity provider: $GOOGLE_IDP"
-            ALLOWED_IDPS="\"allowed_idps\": [\"$GOOGLE_IDP\"],"
+            IDP_EXTRA="\"allowed_idps\": [\"$GOOGLE_IDP\"], \"auto_redirect_to_identity\": true,"
+          else
+            echo "Warning: Could not find Google identity provider. Login screen will show all providers."
+            IDP_EXTRA=""
           fi
 
           if [ -n "$EXISTING_APP" ]; then
@@ -135,8 +138,8 @@ jobs:
                 \"domain\": \"$DOMAIN\",
                 \"type\": \"self_hosted\",
                 \"session_duration\": \"24h\",
-                $ALLOWED_IDPS
-                \"auto_redirect_to_identity\": true
+                $IDP_EXTRA
+                \"tags\": []
               }"
             echo "Updated Access application."
             exit 0
@@ -152,8 +155,8 @@ jobs:
               \"domain\": \"$DOMAIN\",
               \"type\": \"self_hosted\",
               \"session_duration\": \"24h\",
-              $ALLOWED_IDPS
-              \"auto_redirect_to_identity\": true
+              $IDP_EXTRA
+              \"tags\": []
             }")
 
           APP_ID=$(echo "$APP_RESPONSE" | jq -r '.result.id')
