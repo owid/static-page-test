@@ -109,8 +109,36 @@ jobs:
             -H "Content-Type: application/json" \
             | jq -r --arg domain "$DOMAIN" '.result[] | select(.domain == $domain) | .id')
 
+          # Find the Google identity provider ID (skip the OTP provider)
+          GOOGLE_IDP=$(curl -s -X GET \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/access/identity_providers" \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            | jq -r '.result[] | select(.type == "google" or .type == "google-apps") | .id' | head -1)
+
+          if [ -z "$GOOGLE_IDP" ]; then
+            echo "Warning: Could not find Google identity provider."
+            ALLOWED_IDPS=""
+          else
+            echo "Found Google identity provider: $GOOGLE_IDP"
+            ALLOWED_IDPS="\"allowed_idps\": [\"$GOOGLE_IDP\"],"
+          fi
+
           if [ -n "$EXISTING_APP" ]; then
-            echo "Access application already exists for $DOMAIN (ID: $EXISTING_APP). Skipping."
+            echo "Access application already exists for $DOMAIN (ID: $EXISTING_APP). Updating to restrict identity providers..."
+            curl -f -s -X PUT \
+              "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/access/apps/$EXISTING_APP" \
+              -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+              -H "Content-Type: application/json" \
+              --data "{
+                \"name\": \"$DOMAIN\",
+                \"domain\": \"$DOMAIN\",
+                \"type\": \"self_hosted\",
+                \"session_duration\": \"24h\",
+                $ALLOWED_IDPS
+                \"auto_redirect_to_identity\": true
+              }"
+            echo "Updated Access application."
             exit 0
           fi
 
@@ -123,7 +151,9 @@ jobs:
               \"name\": \"$DOMAIN\",
               \"domain\": \"$DOMAIN\",
               \"type\": \"self_hosted\",
-              \"session_duration\": \"24h\"
+              \"session_duration\": \"24h\",
+              $ALLOWED_IDPS
+              \"auto_redirect_to_identity\": true
             }")
 
           APP_ID=$(echo "$APP_RESPONSE" | jq -r '.result.id')
